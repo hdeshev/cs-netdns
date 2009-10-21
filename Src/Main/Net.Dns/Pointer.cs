@@ -1,0 +1,207 @@
+/*
+Version 2, June 1991
+
+Copyright (C) 1989, 1991 Free Software Foundation, Inc.  
+51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+
+Everyone is permitted to copy and distribute verbatim copies
+of this license document, but changing it is not allowed.
+
+A full copy of the license can be obtained at: http://www.gnu.org/licenses/gpl.txt 
+*/
+using System;
+using System.Text;
+
+namespace Net.Dns
+{
+	/// <summary>
+	/// Logical representation of a pointer, but in fact a byte array reference and a position in it. This
+	/// is used to read logical units (bytes, shorts, integers, domain names etc.) from a byte array, keeping
+	/// the pointer updated and pointing to the next record. This type of Pointer can be considered the logical
+	/// equivalent of an (unsigned char*) in C++
+	/// </summary>
+	//[Obsolete("This class will be removed on next release. Please use ByteStream instead!", false)]
+    public class Pointer
+	{
+		// a pointer is a reference to the message and an index
+		private byte[]		message;
+		private int			position;
+
+		// pointers can only be created by passing on an existing message
+		public Pointer(byte[] message, int position)
+		{
+			this.message = message;
+			this.position = position;
+		}
+
+		/// <summary>
+		/// Shallow copy function
+		/// </summary>
+		/// <returns></returns>
+		public Pointer Copy()
+		{
+			return new Pointer(message, position);
+		}
+
+		/// <summary>
+		/// Adjust the pointers position within the message
+		/// </summary>
+		/// <param name="position">new position in the message</param>
+		public void SetPosition(int position)
+		{
+			this.position = position;
+		}
+
+		/// <summary>
+		/// Overloads the + operator to allow advancing the pointer by so many bytes
+		/// </summary>
+		/// <param name="pointer">the initial pointer</param>
+		/// <param name="offset">the offset to add to the pointer in bytes</param>
+		/// <returns>a reference to a new pointer moved forward by offset bytes</returns>
+		public static Pointer operator+(Pointer pointer, int offset)
+		{
+			return new Pointer(pointer.message, pointer.position + offset);
+		}
+
+		/// <summary>
+		/// Reads a single byte at the current pointer, does not advance pointer
+		/// </summary>
+		/// <returns>the byte at the pointer</returns>
+		public byte Peek()
+		{
+			return message[position];
+		}
+
+		/// <summary>
+		/// Read X bytes from return message
+		/// </summary>
+		/// <param name="length"></param>
+		/// <returns></returns>
+		public byte[] ReadBytes(int length)
+		{
+			if (position + length > message.Length) throw new System.IO.EndOfStreamException();
+			byte[] data = new byte[length];
+			Array.Copy(message, position, data, 0, length);
+			position += length;
+			return data;
+		}
+
+		/// <summary>
+		/// Reads a single byte at the current pointer, advancing pointer
+		/// </summary>
+		/// <returns>the byte at the pointer</returns>
+		public byte ReadByte()
+		{
+			return message[position++];
+		}
+
+		public string ReadBch2()
+		{
+			byte ret = ReadByte();
+			return ret.ToString("X2");
+		}
+
+
+		/// <summary>
+		/// Reads two bytes to form a short at the current pointer, advancing pointer
+		/// </summary>
+		/// <returns>the byte at the pointer</returns>
+		public short ReadShort()
+		{
+			return (short)(ReadByte()<<8 | ReadByte());
+		}
+
+		/// <summary>
+		/// Reads four bytes to form a int at the current pointer, advancing pointer
+		/// </summary>
+		/// <returns>the byte at the pointer</returns>
+		public int ReadInt()
+		{
+			return (ushort)ReadShort()<<16 | (ushort)ReadShort();
+		}
+
+		/// <summary>
+		/// Reads a single byte as a char at the current pointer, advancing pointer
+		/// </summary>
+		/// <returns>the byte at the pointer</returns>
+		public char ReadChar()
+		{
+			return (char)ReadByte();
+		}
+
+		/// <summary>
+		/// Reads the full string from the response pointer
+		/// </summary>
+		/// <returns></returns>
+		public string ReadString()
+		{
+			int length = ReadShort();
+			return ReadString(length);
+		}
+
+		/// <summary>
+		/// Reads a string from the pointer.
+		/// </summary>
+		/// <param name="length">Amount of chars to read</param>
+		/// <returns></returns>
+		public string ReadString(int length)
+		{
+			if (position + length > message.Length) throw new System.IO.EndOfStreamException();
+			string ret = System.Text.ASCIIEncoding.ASCII.GetString(message, (int)position, length);
+			position += length;
+			return ret;
+		}
+
+
+		/// <summary>
+		/// Reads a domain name from the byte array. The method by which this works is described
+		/// in RFC1035 - 4.1.4. Essentially to minimise the size of the message, if part of a domain
+		/// name already been seen in the message, rather than repeating it, a pointer to the existing
+		/// definition is used. Each word in a domain name is a label, and is preceded by its length
+		/// 
+		/// eg. bigdevelopments.co.uk
+		/// 
+		/// is [15] (size of bigdevelopments) + "bigdevelopments"
+		///    [2]  "co"
+		///    [2]  "uk"
+		///    [1]  0 (NULL)
+		/// </summary>
+		/// <returns>the byte at the pointer</returns>
+		public string ReadDomain()
+		{
+			StringBuilder domain = new StringBuilder();
+			int length = 0;
+		
+			// get  the length of the first label
+			while ((length = ReadByte()) != 0)
+			{
+				// top 2 bits set denotes domain name compression and to reference elsewhere
+				if ((length & 0xc0) == 0xc0)
+				{
+					// work out the existing domain name, copy this pointer
+					Pointer newPointer = Copy();
+						
+					// and move it to where specified here
+					newPointer.SetPosition((length & 0x3f)<<8 | ReadByte());
+
+					// repeat call recursively
+					domain.Append(newPointer.ReadDomain());
+					return domain.ToString();
+				}
+
+				// if not using compression, copy a char at a time to the domain name
+				while (length > 0)
+				{
+					domain.Append(ReadChar());
+					length--;
+				}
+
+				// if size of next label isn't null (end of domain name) add a period ready for next label
+				if (Peek() != 0) domain.Append('.');
+			}
+
+			// and return
+			return domain.ToString();
+		}
+	}
+}
